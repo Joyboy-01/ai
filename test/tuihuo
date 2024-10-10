@@ -1,0 +1,149 @@
+import argparse
+import networkx as nx
+import random
+import numpy as np
+#python Evaluator.py -n ./data/dataset1.txt -i ./data/initial_seeds.txt -b ./data/balanced_seeds.txt -k 10 -o ./output.txt
+def simulated_annealing(graph, initial_seeds, budget, temperature=2000, cooling_rate=0.95, max_iterations=200):
+    current_solution = list(initial_seeds)
+    best_solution = list(current_solution)
+    best_objective_value = SAEDV(graph, current_solution)
+
+    for iteration in range(max_iterations):
+        temperature *= cooling_rate
+        if temperature <= 1e-3:
+            break
+
+        new_solution = SASH(graph, current_solution, budget)
+        new_objective_value = SAEDV(graph, new_solution)
+
+        if new_objective_value > best_objective_value:
+            best_solution = list(new_solution)
+            best_objective_value = new_objective_value
+        else:
+            acceptance_probability = np.exp((new_objective_value - best_objective_value) / temperature)
+            if random.random() < acceptance_probability:
+                current_solution = list(new_solution)
+        iteration += 1
+
+    return set(best_solution[:len(best_solution)//2]), set(best_solution[len(best_solution)//2:])
+
+
+def calculate_edv(graph, solution):
+    """
+    计算解集 solution 的期望扩散值（EDV），基于图中的边权重。
+    :param graph: 有向图，边上带有 weight1 和 weight2 作为传播概率
+    :param solution: 当前解集 A
+    :return: 解集 solution 的 EDV 值
+    """
+    nb_A = set(solution)  # NB(A) 一开始包含解集 A
+    r = {node: 0 for node in graph.nodes}  # r(v) 初始化为 0
+    
+    # 计算 NB(A) 和 r(v)
+    for node in solution:
+        for neighbor in graph.neighbors(node):
+            nb_A.add(neighbor)
+            edge_data = graph.get_edge_data(node, neighbor, default={})
+            p = edge_data.get(1)  # 使用存储在边上的传播概率 weight1
+            r[neighbor] += p  # 根据边的传播概率来累积 r(v)
+    
+    # 计算 EDV(A)
+    edv_value = len(solution)  # k，即解集 A 中节点数量
+    for v in nb_A - set(solution):  # 计算 NB(A) - A 中的节点影响
+        edv_value += 1 - (1 - r[v])
+    
+    return edv_value
+
+def SASH(graph, current_solution, budget):
+    """
+    基于 EDV 的 SASH 算法，使用边的 weight1 和 weight2 作为传播概率。
+    :param graph: 有向图，边上带有 weight1 和 weight2 作为传播概率
+    :param current_solution: 当前解集
+    :param budget: 预算，解集大小不能超过此值
+    :return: 新解集
+    """
+    # 计算每个节点的 EDV 值作为影响传播的 sigma 值
+    sigma = {node: calculate_edv(graph, [node]) for node in graph.nodes}
+    sigma_sum = sum(sigma.values())
+    
+    # 计算选择节点的累积概率
+    probabilities = []
+    cumulative_probability = 0
+    for node in graph.nodes:
+        cumulative_probability += sigma[node] / sigma_sum
+        probabilities.append((node, cumulative_probability))
+
+    flag = True
+    new_solution = list(current_solution)
+
+    while flag:
+        random_idx = random.randint(0, len(current_solution) - 1)  # 从当前解中随机选择一个要替换的节点
+        random_prob = random.random()  # 随机生成一个概率值
+
+        # 遍历所有节点，找到概率小于等于当前随机值的节点
+        for i, (node, prob) in enumerate(probabilities):
+            # 检查节点不在新解中且不是当前要替换的节点
+            if random_prob <= prob and node not in new_solution and node != current_solution[random_idx]:
+                # 确保新解的大小不会超过 budget
+                if len(new_solution) <= budget:
+                    new_solution[random_idx] = node
+                    flag = False
+                    break
+
+    # 确保最终解的大小不超过 budget
+    if len(new_solution) > budget:
+        new_solution = new_solution[:budget]  # 如果超过了预算，截取前 budget 个节点
+
+    return new_solution
+
+
+def propagate(graph, seed_set, weight_key):
+    exposed_nodes = set(seed_set)
+    for seed in seed_set:
+        neighbors = set(graph.neighbors(seed))
+        for neighbor in neighbors:
+            if neighbor not in exposed_nodes:
+                edge_weight = graph[seed][neighbor].get(weight_key, 1.0)  # 使用指定的扩散概率
+                if random.random() < edge_weight:
+                    exposed_nodes.add(neighbor)
+    return exposed_nodes
+
+
+
+def SAEDV(graph, seed_set1, seed_set2):
+    exposed_nodes_c1 = propagate(graph, seed_set1, 'weight1')
+    exposed_nodes_c2 = propagate(graph, seed_set2, 'weight2')
+    symmetric_diff = exposed_nodes_c1.symmetric_difference(exposed_nodes_c2)
+    return len(graph.nodes) - len(symmetric_diff)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-n", "--network_file")
+    parser.add_argument("-i", "--initial_seeds")
+    parser.add_argument("-b", "--balanced_seeds")
+    parser.add_argument("-k", "--budget", type=int)
+    parser.add_argument("-o", "--output")
+    args = parser.parse_args()
+
+    graph = nx.DiGraph()
+    with open(args.network_file, 'r') as f:
+        n, m = map(int, f.readline().split())
+        for _ in range(m):
+            u, v, p1, p2 = f.readline().split()
+            u, v = int(u), int(v)
+            p1, p2 = float(p1), float(p2)
+            graph.add_edge(u, v, weight1=p1, weight2=p2)
+            graph.add_edge(v, u, weight1=p2, weight2=p1)
+
+    with open(args.initial_seeds, 'r') as f:
+        k1, k2 = map(int, f.readline().split())
+        initial_seeds = set(int(f.readline().strip()) for _ in range(k1 + k2))
+
+    with open(args.balanced_seeds, 'r') as f:
+        k1, k2 = map(int, f.readline().split())
+        balanced_seeds = set(int(f.readline().strip()) for _ in range(k1 + k2))
+
+    S1_sa, S2_sa = simulated_annealing(graph, initial_seeds, args.budget)
+
+    with open(args.output, 'w') as f:
+        f.write(f"{SAEDV(graph, S1_sa | S2_sa):.2f}\n")

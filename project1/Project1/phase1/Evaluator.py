@@ -1,56 +1,103 @@
-import sys
-import pandas as pd
-import numpy as np
+import argparse
 import networkx as nx
+import random
+import numpy as np
+#python Evaluator.py -n ./data/dataset1.txt -i ./data/initial_seeds.txt -b ./data/balanced_seeds.txt -k 10 -o ./output.txt
+def independent_cascade(graph, seeds, weight_key):
+    reached = set(seeds)
+    vis = [False] * n
 
-# Import your algorithms
-from algorithms.heuristic_algorithm import heuristic_algorithm
-from algorithms.evolutionary_algorithm import evolutionary_algorithm
+    def dfs_visit(node):
+        vis[node] = True
+        for neighbor in graph[node]: 
+            if not vis[neighbor]: 
+                weight = graph[node][neighbor][weight_key]
+                rand = random.random()
+                if rand < weight:
+                    reached.add(neighbor)
+                    dfs_visit(neighbor) 
+                else:
+                    reached.add(neighbor)
 
-#python Evaluator.py -n ./data/social_network.txt -i ./data/initial_seeds.txt -b ./data/balanced_seeds.txt -k 10 -o ./output/output.txt
+    for seed in seeds:
+        if not vis[seed]:
+            dfs_visit(seed)
 
-def load_social_network(file_path):
-    """Load the social network data from a file."""
-    with open(file_path, 'r') as f:
-        lines = f.readlines()
-    n, m = map(int, lines[0].strip().split())
-    edges = []
-    for line in lines[1:m + 1]:
-        u, v, p1, p2 = map(float, line.strip().split())
-        edges.append((int(u), int(v), p1, p2))
-    
-    G = nx.DiGraph()
-    for u, v, p1, p2 in edges:
-        G.add_edge(u, v, p1=p1, p2=p2)
-    
-    return G
+    return reached
 
-def load_seed_set(file_path):
-    """Load the seed set from a file."""
-    with open(file_path, 'r') as f:
-        lines = f.readlines()
-    k1, k2 = map(int, lines[0].strip().split())
-    seeds = [int(lines[i].strip()) for i in range(1, k1 + 1)]
-    return seeds
+       
 
-def main():
-    social_network_path = sys.argv[2]
-    initial_seed_path = sys.argv[4]
-    balanced_seed_path = sys.argv[6]
-    budget = int(sys.argv[8])
-    output_path = sys.argv[10]
-    
-    social_network = load_social_network(social_network_path)
-    
-    initial_seeds = load_seed_set(initial_seed_path)
-    balanced_seeds = load_seed_set(balanced_seed_path)
+def monte_carlo_simulation(graph, seeds1, seeds2, simulations=1000):
+    total_exposure = 0
+    for _ in range(simulations):
+        exposed_nodes_1 = independent_cascade(graph, seeds1, "weight1")
+        exposed_nodes_2 = independent_cascade(graph, seeds2, "weight2")
+        total_exposure += len(graph.nodes) - len(exposed_nodes_1.symmetric_difference(exposed_nodes_2))
+    return total_exposure / simulations
 
-    result_heuristic = heuristic_algorithm(social_network, initial_seeds, balanced_seeds, budget)
-    result_evolutionary = evolutionary_algorithm(social_network, initial_seeds, balanced_seeds, budget)
+def greedy_best_first_search(graph, initial_seeds1, initial_seeds2, balanced_seeds1, balanced_seeds2, budget):
+    current_seeds1 = set(balanced_seeds1)
+    current_seeds2 = set(balanced_seeds2)
+    remaining_budget = budget - len(current_seeds1) - len(current_seeds2)
 
-    objective_value = max(result_heuristic, result_evolutionary)
-    with open(output_path, 'w') as f:
-        f.write(str(objective_value))
+    while remaining_budget > 0:
+        best_node = None
+        best_spread = -np.inf
+        for node in set(graph.nodes) - current_seeds1 - current_seeds2:
+            new_seeds1 = current_seeds1 | {node}
+            spread = monte_carlo_simulation(graph, initial_seeds1 | new_seeds1, initial_seeds2 | current_seeds2)
+            if spread > best_spread:
+                best_spread = spread
+                best_node = (node, 1)
+
+            new_seeds2 = current_seeds2 | {node}
+            spread = monte_carlo_simulation(graph, initial_seeds1 | current_seeds1, initial_seeds2 | new_seeds2)
+            if spread > best_spread:
+                best_spread = spread
+                best_node = (node, 2)
+
+        if best_node is None:
+            break
+
+        if best_node[1] == 1:
+            current_seeds1.add(best_node[0])
+        else:
+            current_seeds2.add(best_node[0])
+
+        remaining_budget -= 1
+
+    return monte_carlo_simulation(graph, initial_seeds1 | current_seeds1, initial_seeds2 | current_seeds2)
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-n", "--network_file")
+    parser.add_argument("-i", "--initial_seeds")
+    parser.add_argument("-b", "--balanced_seeds")
+    parser.add_argument("-k", "--budget", type=int)
+    parser.add_argument("-o", "--output")
+    args = parser.parse_args()
+
+    graph = nx.DiGraph()
+    with open(args.network_file, 'r') as f:
+        n, m = map(int, f.readline().split())
+        for _ in range(m):
+            u, v, p1, p2 = f.readline().split()
+            u, v = int(u), int(v)
+            p1, p2 = float(p1), float(p2)
+            graph.add_edge(u, v, weight1=p1, weight2=p2)
+
+    with open(args.initial_seeds, 'r') as f:
+        k1, k2 = map(int, f.readline().split())
+        initial_seeds1 = set(int(f.readline().strip()) for _ in range(k1))
+        initial_seeds2 = set(int(f.readline().strip()) for _ in range(k2))
+
+
+    with open(args.balanced_seeds, 'r') as f:
+        k1, k2 = map(int, f.readline().split())
+        balanced_seeds1 = set(int(f.readline().strip()) for _ in range(k1))
+        balanced_seeds2 = set(int(f.readline().strip()) for _ in range(k2))
+
+    best_spread = greedy_best_first_search(graph, initial_seeds1, initial_seeds2, balanced_seeds1, balanced_seeds2, args.budget)
+
+    with open(args.output, 'w') as f:
+        f.write(f"{best_spread:.2f}\n")
